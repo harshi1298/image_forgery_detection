@@ -1,5 +1,6 @@
 """
-Feature matching and geometric verification for Intra-Image Copy-Move detection.
+Feature matching, Normalized Cross-Correlation (NCC) verification,
+and geometric RANSAC filtering for Intra-Image Copy-Move detection.
 """
 
 from typing import List, Tuple, Optional, Dict, Any
@@ -7,26 +8,56 @@ import cv2
 import numpy as np
 
 
+def compute_patch_ncc(
+    gray_image: np.ndarray,
+    pt1: Tuple[float, float],
+    pt2: Tuple[float, float],
+    patch_size: int = 17,
+) -> float:
+    """
+    Compute Normalized Cross-Correlation (NCC / Pearson correlation) between two image patches.
+    In genuine copy-move manipulation, cloned regions have high cross-correlation (>= 0.50 - 0.95).
+    Spurious keypoint matches on unrelated textures have near-zero or low correlation.
+    """
+    h, w = gray_image.shape[:2]
+    r = patch_size // 2
+    x1, y1 = int(round(pt1[0])), int(round(pt1[1]))
+    x2, y2 = int(round(pt2[0])), int(round(pt2[1]))
+
+    if x1 - r < 0 or x1 + r >= w or y1 - r < 0 or y1 + r >= h:
+        return 0.0
+    if x2 - r < 0 or x2 + r >= w or y2 - r < 0 or y2 + r >= h:
+        return 0.0
+
+    p1 = gray_image[y1 - r : y1 + r + 1, x1 - r : x1 + r + 1].astype(np.float32)
+    p2 = gray_image[y2 - r : y2 + r + 1, x2 - r : x2 + r + 1].astype(np.float32)
+
+    s1 = float(np.std(p1))
+    s2 = float(np.std(p2))
+    if s1 < 2.0 or s2 < 2.0:
+        return 0.0
+
+    p1_norm = (p1 - np.mean(p1)) / s1
+    p2_norm = (p2 - np.mean(p2)) / s2
+    return float(np.mean(p1_norm * p2_norm))
+
+
 def match_keypoints_intra_image(
     keypoints: List[cv2.KeyPoint],
     descriptors: Optional[np.ndarray],
-    ratio_threshold: float = 0.78,
+    gray_image: Optional[np.ndarray] = None,
+    ratio_threshold: float = 0.75,
     min_spatial_distance: float = 35.0,
-    max_hamming_distance: int = 60,
+    max_hamming_distance: int = 50,
+    min_patch_ncc: float = 0.45,
     k_neighbors: int = 10,
-) -> List[Tuple[int, int, float, float]]:
+) -> List[Tuple[int, int, float, float, float]]:
     """
-    Perform intra-image feature matching to discover identical or transformed regions.
-
-    Since we match descriptors against the same image:
-    1. Self-matches (i == j) are ignored.
-    2. Neighbors within a small spatial radius (min_spatial_distance) are discarded
-       to prevent spurious matches between adjacent texture pixels.
-    3. Ratio test is performed between the best non-local candidate and the next candidate.
-    4. Symmetrical pairs (i, j) and (j, i) are deduplicated (i < j).
+    Perform intra-image feature matching with spatial radius constraint,
+    Lowe's ratio test, and patch Normalized Cross-Correlation (NCC) verification.
 
     Returns:
-        List of match tuples: (idx1, idx2, hamming_distance, spatial_distance)
+        List of match tuples: (idx1, idx2, hamming_dist, spatial_dist, ncc_score)
     """
     if descriptors is None or len(descriptors) < 4:
         return []
@@ -35,13 +66,11 @@ def match_keypoints_intra_image(
     if num_kps < 4:
         return []
 
-    # BFMatcher with NORM_HAMMING for binary ORB descriptors
     bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
     k = min(k_neighbors, num_kps)
     raw_knn = bf.knnMatch(descriptors, descriptors, k=k)
 
     coords = np.array([kp.pt for kp in keypoints], dtype=np.float32)
-
     candidate_matches = []
     seen_pairs = set()
 
@@ -50,8 +79,6 @@ def match_keypoints_intra_image(
             continue
 
         pt_i = coords[i]
-
-        # Filter out self-match and spatial neighbors that are too close
         valid_candidates = []
         for m in matches:
             j = m.trainIdx
@@ -62,70 +89,69 @@ def match_keypoints_intra_image(
             if spatial_dist >= min_spatial_distance:
                 valid_candidates.append((m, spatial_dist))
 
-        if not valid_candidates:
+        if len(valid_candidates) < 2:
             continue
 
         best_m, best_spatial = valid_candidates[0]
-        best_j = best_m.trainIdx
+        second_m, _ = valid_candidates[1]
+
         best_dist = best_m.distance
+        second_dist = max(second_m.distance, 1e-4)
 
         if best_dist > max_hamming_distance:
             continue
 
-        # Ratio test against the second non-local neighbor if available
-        if len(valid_candidates) >= 2:
-            second_m, _ = valid_candidates[1]
-            second_dist = max(second_m.distance, 1e-5)
-            if (best_dist / second_dist) > ratio_threshold:
+        # Lowe's ratio test against the second nearest non-local candidate
+        if (best_dist / second_dist) > ratio_threshold:
+            continue
+
+        p1_idx, p2_idx = min(i, best_m.trainIdx), max(i, best_m.trainIdx)
+        if (p1_idx, p2_idx) in seen_pairs:
+            continue
+        seen_pairs.add((p1_idx, p2_idx))
+
+        # Patch cross-correlation verification
+        ncc_score = 1.0
+        if gray_image is not None:
+            ncc_score = compute_patch_ncc(gray_image, coords[p1_idx], coords[p2_idx])
+            if ncc_score < min_patch_ncc:
                 continue
 
-        # Canonical pair (min_idx, max_idx) to avoid duplicates
-        p1, p2 = (min(i, best_j), max(i, best_j))
-        if (p1, p2) not in seen_pairs:
-            seen_pairs.add((p1, p2))
-            spatial_dist = float(np.hypot(coords[p1][0] - coords[p2][0], coords[p1][1] - coords[p2][1]))
-            candidate_matches.append((p1, p2, float(best_dist), spatial_dist))
+        candidate_matches.append((p1_idx, p2_idx, float(best_dist), best_spatial, float(ncc_score)))
 
     return candidate_matches
 
 
 def cluster_displacement_vectors(
     keypoints: List[cv2.KeyPoint],
-    matches: List[Tuple[int, int, float, float]],
-    bin_size: float = 30.0,
-    min_cluster_size: int = 4,
-) -> List[List[Tuple[int, int, float, float]]]:
+    matches: List[Tuple],
+    bin_size: float = 20.0,
+    min_cluster_size: int = 5,
+) -> List[List[Tuple]]:
     """
-    Cluster matches by displacement vector (dx, dy).
-    In pure translation copy-move, the displacement vector (dx, dy) is constant
-    across all duplicated keypoints.
+    Cluster putative matches by displacement vector (dx, dy).
+    In pure translation copy-move, the displacement vector is consistent.
     """
     if not matches:
         return []
 
-    clusters: Dict[Tuple[int, int], List[Tuple[int, int, float, float]]] = {}
-
+    clusters: Dict[Tuple[int, int], List[Tuple]] = {}
     for m in matches:
-        i, j, _, _ = m
-        pt1 = keypoints[i].pt
-        pt2 = keypoints[j].pt
+        i, j = m[0], m[1]
+        p1 = keypoints[i].pt
+        p2 = keypoints[j].pt
 
-        dx = pt2[0] - pt1[0]
-        dy = pt2[1] - pt1[1]
+        dx = p2[0] - p1[0]
+        dy = p2[1] - p1[1]
 
-        # Canonicalize vector direction so (dx, dy) and (-dx, -dy) group together
+        # Canonicalize vector direction
         if dx < 0 or (dx == 0 and dy < 0):
             dx, dy = -dx, -dy
 
-        bin_x = int(round(dx / bin_size))
-        bin_y = int(round(dy / bin_size))
-        bin_key = (bin_x, bin_y)
+        bx = int(round(dx / bin_size))
+        by = int(round(dy / bin_size))
+        clusters.setdefault((bx, by), []).append(m)
 
-        if bin_key not in clusters:
-            clusters[bin_key] = []
-        clusters[bin_key].append(m)
-
-    # Return clusters meeting the minimum size threshold, sorted largest first
     valid_clusters = [cl for cl in clusters.values() if len(cl) >= min_cluster_size]
     valid_clusters.sort(key=len, reverse=True)
     return valid_clusters
@@ -133,30 +159,22 @@ def cluster_displacement_vectors(
 
 def apply_ransac_filtering(
     keypoints: List[cv2.KeyPoint],
-    matches: List[Tuple[int, int, float, float]],
-    reproj_threshold: float = 8.0,
-    min_inliers: int = 5,
-) -> Tuple[List[Tuple[int, int, float, float]], Optional[np.ndarray], np.ndarray]:
+    matches: List[Tuple],
+    reproj_threshold: float = 6.0,
+    min_inliers: int = 8,
+    min_spatial_distance: float = 35.0,
+) -> Tuple[List[Tuple], Optional[np.ndarray], np.ndarray]:
     """
     Apply RANSAC geometric verification to remove geometrically inconsistent false matches.
-
-    Attempts to fit an affine transformation (or homography) between source and destination points.
-    Also handles translation/rotation clusters.
-
-    Returns:
-        inlier_matches: list of filtered matches
-        transform_matrix: 2x3 affine matrix or 3x3 homography (or None)
-        inlier_mask: boolean or uint8 mask of inliers
+    Validates that the estimated affine transformation is physically realistic.
     """
     if len(matches) < min_inliers:
         return [], None, np.zeros(len(matches), dtype=bool)
 
     coords = np.array([kp.pt for kp in keypoints], dtype=np.float32)
-
     src_pts = np.array([coords[m[0]] for m in matches], dtype=np.float32).reshape(-1, 1, 2)
     dst_pts = np.array([coords[m[1]] for m in matches], dtype=np.float32).reshape(-1, 1, 2)
 
-    # First attempt: Affine partial 2D (translation + rotation + uniform scale)
     M, inliers = cv2.estimateAffinePartial2D(
         src_pts,
         dst_pts,
@@ -169,34 +187,26 @@ def apply_ransac_filtering(
     inlier_mask = inliers.ravel().astype(bool) if inliers is not None else np.zeros(len(matches), dtype=bool)
     inlier_count = int(np.sum(inlier_mask))
 
-    # If affine didn't yield enough inliers, try homography (handles perspective distortion)
-    if inlier_count < min_inliers and len(matches) >= 4:
-        H, h_inliers = cv2.findHomography(
-            src_pts,
-            dst_pts,
-            cv2.RANSAC,
-            ransacReprojThreshold=reproj_threshold,
-            maxIters=3000,
-            confidence=0.99,
-        )
-        if h_inliers is not None and np.sum(h_inliers) > inlier_count:
-            M = H
-            inlier_mask = h_inliers.ravel().astype(bool)
-            inlier_count = int(np.sum(inlier_mask))
+    # Geometric sanity check on affine matrix
+    is_valid_transform = False
+    if M is not None and inlier_count >= min_inliers:
+        scale = np.sqrt(M[0, 0] ** 2 + M[0, 1] ** 2)
+        trans_dist = np.hypot(M[0, 2], M[1, 2])
+        # Scale must be realistic and translation must exceed minimum spatial distance
+        if 0.60 <= scale <= 1.65 and trans_dist >= min_spatial_distance * 0.70:
+            is_valid_transform = True
 
-    # If RANSAC geometric model struggled (e.g., complex multi-patch clone),
-    # check displacement vector clustering as a reliable backup
-    if inlier_count < min_inliers:
-        clusters = cluster_displacement_vectors(keypoints, matches, bin_size=25.0, min_cluster_size=min_inliers)
+    # Fallback to displacement vector clustering if affine model failed
+    if not is_valid_transform or inlier_count < min_inliers:
+        clusters = cluster_displacement_vectors(
+            keypoints, matches, bin_size=20.0, min_cluster_size=min_inliers
+        )
         if clusters:
-            # Union top consistent clusters
-            cluster_matches = []
-            for cl in clusters:
-                cluster_matches.extend(cl)
-            cluster_set = set(cluster_matches)
+            best_cluster = clusters[0]
+            cluster_set = set(best_cluster)
             inlier_mask = np.array([m in cluster_set for m in matches], dtype=bool)
             inlier_count = int(np.sum(inlier_mask))
+            M = None
 
     inlier_matches = [m for idx, m in enumerate(matches) if inlier_mask[idx]]
     return inlier_matches, M, inlier_mask
-

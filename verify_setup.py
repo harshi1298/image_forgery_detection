@@ -2,11 +2,10 @@
 Pipeline verification test on CoMoFoD sample 001.
 """
 
-from pathlib import Path
 from preprocessing import preprocess_pipeline
-from detection import detect_copy_move, visualize_copy_move_matches
-from ela import compute_ela, generate_ela_mask, visualize_ela_heatmap
-from localization import generate_suspicious_mask, create_overlay
+from detection import detect_copy_move
+from ela import compute_ela
+from localization import generate_suspicious_mask
 from evaluation import calculate_pixel_metrics, make_final_decision
 from dataset_loader import CoMoFoDDataset
 
@@ -29,17 +28,18 @@ def main():
     filtered_gray = prep["filtered_gray"]
     print(f"Resized image shape: {resized_rgb.shape}")
 
-    # 2. Copy-Move Detection (ORB + Matcher + RANSAC)
+    # 2. Copy-Move Detection
     cm_res = detect_copy_move(
         filtered_gray,
         n_features=3500,
-        ratio_threshold=0.80,
+        ratio_threshold=0.75,
         min_spatial_distance=35.0,
-        max_hamming_distance=60,
+        max_hamming_distance=50,
+        min_inliers_for_forgery=10,
     )
     print(f"Keypoints: {len(cm_res['keypoints'])}")
     print(f"Candidate Matches: {len(cm_res['all_matches'])}")
-    print(f"RANSAC Inlier Matches: {len(cm_res['inlier_matches'])}")
+    print(f"RANSAC Inlier Matches: {len(cm_res['inlier_matches'])} (Mean NCC: {cm_res['mean_ncc']:.2f})")
     print(f"Copy-Move Detected: {cm_res['is_detected']} (Confidence: {cm_res['confidence']:.2f})")
 
     # 3. Dense Mask Generation
@@ -47,9 +47,10 @@ def main():
         image_shape=resized_rgb.shape[:2],
         matched_points_src=cm_res["matched_points_src"],
         matched_points_dst=cm_res["matched_points_dst"],
-        point_radius=20,
-        dilation_kernel_size=25,
-        closing_kernel_size=21,
+        is_detected=cm_res["is_detected"],
+        point_radius=6,
+        dilation_kernel_size=7,
+        closing_kernel_size=7,
     )
     pred_pixels = (pred_mask > 127).sum()
     print(f"Predicted suspicious mask area: {pred_pixels} pixels")
@@ -59,7 +60,7 @@ def main():
     print(f"ELA Anomaly Score: {ela_res['suspicious_score']:.2f} (Std Error: {ela_res['std_error']:.2f})")
 
     # 5. Final Decision
-    decision = make_final_decision(cm_res, ela_res, pred_mask)
+    decision = make_final_decision(cm_res, ela_res, pred_mask, min_inliers=10)
     print(f"Verdict: {decision['verdict']} (Confidence: {decision['confidence_pct']}%, Risk: {decision['risk_level']})")
 
     # 6. Evaluation against Ground Truth

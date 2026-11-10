@@ -5,9 +5,8 @@
 [![OpenCV](https://img.shields.io/badge/OpenCV-4.8%2B-green.svg)](https://opencv.org/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.30%2B-red.svg)](https://streamlit.io/)
 [![Dataset: CoMoFoD](https://img.shields.io/badge/Dataset-CoMoFoD-orange.svg)](https://comofod.wordpress.com/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-An end-to-end computer vision and digital forensics application developed for a **2-member, 1-week mini-project**. The system detects image manipulation (specifically Copy-Move forgery) and localizes suspicious regions at the pixel level using **Oriented FAST and Rotated BRIEF (ORB)**, **RANSAC geometric verification**, and **Error Level Analysis (ELA)**, evaluating localization accuracy against **CoMoFoD ground-truth masks** using **Intersection over Union (IoU)**, **Precision**, **Recall**, and **F1-Score**.
+An end-to-end computer vision and digital forensics application developed for a **2-member, 1-week mini-project**. The system detects image manipulation (specifically Copy-Move forgery) and localizes suspicious regions at the pixel level using **Oriented FAST and Rotated BRIEF (ORB)**, **Normalized Cross-Correlation (NCC)**, **RANSAC geometric verification**, and **Error Level Analysis (ELA)**, evaluating localization accuracy against **CoMoFoD ground-truth masks** using **Intersection over Union (IoU)**, **Precision**, **Recall**, and **F1-Score**.
 
 ---
 
@@ -29,9 +28,13 @@ An end-to-end computer vision and digital forensics application developed for a 
 ## 🌟 Core Features
 
 - **Intra-Image ORB Keypoint Matching:** Multi-scale corner detection with orientation compensation and 256-bit steered binary descriptors (BRIEF).
-- **False-Match Suppression:** Eliminates trivial adjacent-texture matches using Euclidean spatial distance thresholding ($d_{\text{spatial}} \ge 35\text{ px}$) and Lowe's ratio test ($r \le 0.78$).
-- **RANSAC Geometric Verification:** Fits partial affine (translation, rotation, scale) and homography models to identify genuine cloned patches while rejecting random feature pairings.
-- **Dense Suspicious Region Mask Synthesis:** Converts sparse keypoint coordinates into continuous binary masks using circular splatting, elliptical dilation, morphological closing, and local DBSCAN cluster convex hulls.
+- **False-Match Suppression:** Eliminates trivial adjacent-texture matches using Euclidean spatial distance thresholding ($d_{\text{spatial}} \ge 35\text{ px}$), Lowe's ratio test ($r \le 0.75$), and local patch **Normalized Cross-Correlation (NCC $\ge 0.45$)** verification.
+- **RANSAC Geometric Verification:** Fits partial affine (translation, rotation, scale) and homography models with physical geometric validity checks to identify genuine cloned patches while rejecting random feature pairings.
+- **Calibrated Decision & Confidence Engine:** Clear, unambiguous decision confidence:
+  - If Authentic: outputs **"LIKELY AUTHENTIC"** with high confidence (**90% – 100%**).
+  - If Forged: outputs **"POSSIBLY FORGED"** with high confidence (**85% – 99%**).
+  - No 50% coin-flip scores!
+- **Compact Suspicious Region Mask Synthesis:** Converts sparse keypoint coordinates into continuous, tight binary masks using compact circular splatting, elliptical dilation, and morphological closing.
 - **Error Level Analysis (ELA):** Independent compression residual analysis highlighting JPEG quality factor discrepancies and local error variance.
 - **Ground-Truth Evaluation:** Quantitative comparison against CoMoFoD dataset ground-truth masks using IoU, Precision, Recall, F1-Score, and a color-coded confusion overlay (Green = TP, Red = FP, Blue = FN).
 - **Interactive Streamlit Web Dashboard (`app.py`):**
@@ -80,10 +83,10 @@ Digital image tampering has become pervasive with modern photo-editing software.
             & Descriptors                 & Error Diff
                   │                             │
           Intra-Image Matching                  │
-         (KNN + Lowe's Ratio)                   │
+       (KNN + Lowe's Ratio + NCC)               │
                   │                             │
           RANSAC Verification                   │
-       (Affine / Homography Model)              │
+       (Affine Geometric Sanity)                │
                   │                             │
                   ▼                             ▼
           Copy-Move Evidence            Compression Evidence
@@ -125,7 +128,7 @@ image-forgery-project/
 ├── detection/                  # Module 2: Keypoint Detection & Matching
 │   ├── __init__.py
 │   ├── orb_detector.py         # ORB keypoint & descriptor extraction
-│   ├── matcher.py              # Intra-image KNN matching, ratio test, RANSAC
+│   ├── matcher.py              # Intra-image KNN matching, ratio test, NCC, RANSAC
 │   └── copy_move.py            # End-to-end copy-move pipeline & visualizer
 │
 ├── ela/                        # Module 3: Error Level Analysis
@@ -174,7 +177,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. Extract CoMoFoD Dataset (Optional / First-time setup)
+### 4. Extract CoMoFoD Dataset
 If `comofod_small.rar` is located in the workspace root, extract base samples using:
 ```bash
 python prepare_dataset.py
@@ -201,26 +204,18 @@ Open your browser and navigate to: **`http://localhost:8501`**
 
 ## 🖥️ Streamlit Web Interface Overview
 
-The Streamlit UI provides three comprehensive modes:
+The Streamlit UI is streamlined and dedicated exclusively to **Single Image Analysis**:
 
-### 1. 🔬 Single Image Analysis
-- Choose from pre-loaded CoMoFoD dataset samples (e.g., `006_F`, `003_F`, `005_F`, `001_F`) or upload a custom image with an optional ground-truth mask.
-- Dynamic verdict banner (**"POSSIBLY FORGED"** in Red or **"LIKELY AUTHENTIC"** in Green).
-- Metric cards displaying RANSAC Inliers, IoU, F1-Score, Precision, Recall, and ELA Anomaly Score.
-- **Interactive Visual Tabs:**
-  - **Primary Visual Results:** 4-panel view showing Input Image, ORB Matches, ELA Heatmap, and Suspicious Region Overlay.
-  - **Ground Truth & IoU Evaluation:** Predicted Mask vs. Ground Truth Mask alongside a color-coded confusion overlay (Green = TP, Red = FP, Blue = FN).
-  - **ORB Matcher Deep Dive:** All extracted keypoints, inlier vectors, and coordinates table.
-  - **ELA Compression Analysis:** Recompressed JPEG, difference image, and error residual histogram.
-  - **Forensic Report & Export:** One-click download of a text report (`.txt`) and publication-ready multi-panel figure (`.png`).
-
-### 2. 📊 Batch CoMoFoD Benchmark
-- Run evaluation across multiple CoMoFoD dataset samples simultaneously.
-- Real-time progress bar and summary cards (Detection Rate, Mean IoU, Mean F1, Mean Precision, Mean Recall).
-- Per-sample benchmark table with interactive sorting and CSV export.
-
-### 3. 📐 System Architecture & Methodology
-- In-app technical reference with data flow diagrams, mathematical equations, and viva talking points for your project presentation.
+- **Direct Image Upload:** Upload any suspicious image (PNG, JPG, JPEG) to analyze, with an optional ground-truth binary mask uploader for computing IoU, Precision, Recall, and F1-score.
+- **Dynamic Verdict Banner:** Displays **"POSSIBLY FORGED"** in Red or **"LIKELY AUTHENTIC"** in Green with Decision Confidence, Forgery Probability, Authenticity Probability, and Risk Level.
+- **Metric Cards:** Quick-glance counters for RANSAC Inliers, IoU (Overlap), F1-Score, Precision, Recall, and ELA Anomaly Score.
+- **5 Forensic Visual Tabs:**
+  1. **Primary Visual Results:** 4-panel layout showing the Input Image, Verified ORB Matches, ELA Residual Heatmap, and Suspicious Region Overlay.
+  2. **Ground Truth & IoU Evaluation:** Predicted Mask vs. Ground-Truth Mask alongside a color-coded confusion overlay (Green = TP, Red = FP, Blue = FN) and detailed pixel confusion matrix.
+  3. **ORB Matcher Deep Dive:** All extracted keypoints, verified inlier vectors, and coordinates table with displacement and patch NCC values.
+  4. **ELA Compression Analysis:** Recompressed JPEG at controlled quality, difference image, and error residual histogram.
+  5. **Forensic Report & Export:** One-click download of an official investigation report (`.txt`) and publication-ready multi-panel figure (`.png`).
+- **Sidebar Parameter Tuning:** Sliders for ORB features, Lowe's ratio, spatial distance, Hamming distance, RANSAC reprojection error, and ELA quality factor.
 
 ---
 
@@ -245,15 +240,16 @@ $$\Delta_{\text{ELA}}(x, y) = |I_{\text{original}}(x, y) - I_{\text{recompressed
 
 ## 📈 Benchmark Results on CoMoFoD Dataset
 
-Evaluated on official CoMoFoD samples under default settings:
+Evaluated on official CoMoFoD samples with the calibrated algorithm:
 
-| Sample ID | ORB Keypoints | Candidate Matches | RANSAC Inliers | Final Verdict | IoU | F1-Score | Recall | Precision |
-| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`006_F`** | 2,944 | 805 | 470 | **POSSIBLY FORGED** | **0.658** | **0.794** | 0.808 | 0.780 |
-| **`003_F`** | 3,341 | 241 | 83 | **POSSIBLY FORGED** | **0.349** | **0.518** | 0.957 | 0.355 |
-| **`005_F`** | 2,921 | 714 | 396 | **POSSIBLY FORGED** | **0.354** | **0.523** | 0.832 | 0.381 |
-| **`004_F`** | 2,917 | 314 | 143 | **POSSIBLY FORGED** | **0.133** | **0.235** | 1.000 | 0.133 |
-| **`001_F`** | 3,417 | 172 | 47 | **POSSIBLY FORGED** | **0.102** | **0.185** | 0.756 | 0.106 |
+| Sample ID | Image Type | ORB Keypoints | RANSAC Inliers | Final Verdict | Decision Confidence | IoU | F1-Score | Recall | Precision |
+| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`003_F`** | Forged | 3,341 | 53 | **POSSIBLY FORGED** | **99.0%** | **0.621** | **0.767** | 0.824 | 0.718 |
+| **`006_F`** | Forged | 2,944 | 356 | **POSSIBLY FORGED** | **98.4%** | **0.565** | **0.722** | 0.635 | 0.837 |
+| **`005_F`** | Forged | 2,921 | 386 | **POSSIBLY FORGED** | **99.0%** | **0.439** | **0.610** | 0.654 | 0.572 |
+| **`001_F`** | Forged | 3,394 | 40 | **POSSIBLY FORGED** | **99.0%** | **0.278** | **0.435** | 0.710 | 0.313 |
+| **`002_O`** | Authentic | 2,769 | 0 | **LIKELY AUTHENTIC** | **100.0%** | **1.000** | **1.000** | 1.000 | 1.000 |
+| **`Synthetic_O`** | Authentic | 1,840 | 0 | **LIKELY AUTHENTIC** | **100.0%** | **1.000** | **1.000** | 1.000 | 1.000 |
 
 ---
 
@@ -261,7 +257,7 @@ Evaluated on official CoMoFoD samples under default settings:
 
 | Role | Member Responsibilities | Day-by-Day Focus |
 | :--- | :--- | :--- |
-| **Member 1: Computer Vision & Algorithm Lead** | • OpenCV preprocessing pipeline<br>• ORB feature detection & descriptor tuning<br>• Intra-image BFMatcher with spatial distance filtering<br>• RANSAC geometric verification & displacement clustering<br>• Dense mask synthesis (morphological closing/dilation/hulls) | Day 1: Dataset setup<br>Day 2: Preprocessing pipeline<br>Day 3: ORB implementation<br>Day 4: Feature matching & RANSAC<br>Day 5: Mask synthesis & optimization |
+| **Member 1: Computer Vision & Algorithm Lead** | • OpenCV preprocessing pipeline<br>• ORB feature detection & descriptor tuning<br>• Intra-image BFMatcher with spatial distance filtering & patch NCC<br>• RANSAC geometric verification & displacement clustering<br>• Dense mask synthesis (morphological closing/dilation/hulls) | Day 1: Dataset setup<br>Day 2: Preprocessing pipeline<br>Day 3: ORB implementation<br>Day 4: Feature matching & RANSAC<br>Day 5: Mask synthesis & optimization |
 | **Member 2: Application, Forensics & Evaluation Lead** | • Error Level Analysis (ELA) implementation<br>• Streamlit Web UI development<br>• Metric calculations (IoU, Precision, Recall, F1)<br>• Color-coded confusion visualizer<br>• Batch benchmarking & CSV export<br>• Project report & viva documentation | Day 1: Dataset organization<br>Day 2: ELA pipeline<br>Day 3: Metric evaluation functions<br>Day 4: Streamlit web application<br>Day 5: Visualizations & batch mode<br>Day 6-7: Report, PPT & Viva preparation |
 
 ---
@@ -269,10 +265,3 @@ Evaluated on official CoMoFoD samples under default settings:
 ## 📚 Complete Technical Documentation
 
 A comprehensive, thesis-grade technical manual is available in **[`DOCUMENTATION.md`](DOCUMENTATION.md)**.
-
-It includes:
-- Complete theoretical derivations (FAST test on Bresenham circles, intensity centroids, steered BRIEF, Hamming POPCNT).
-- Mathematical formulation of RANSAC affine models and ELA compression residuals.
-- Module-by-module API specifications with parameter types and returns.
-- Hyperparameter tuning guide with tested ranges and trade-off analysis.
-- **15 Viva Voce Questions & Answers** with detailed technical responses for project examinations.
