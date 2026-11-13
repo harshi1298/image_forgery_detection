@@ -1,8 +1,9 @@
 """
-ORB (Oriented FAST and Rotated BRIEF) keypoint detection and descriptor computation.
+Feature keypoint detection and descriptor computation supporting both SIFT
+(scale & rotation invariant) and multi-scale ORB.
 """
 
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Union
 import cv2
 import numpy as np
 
@@ -10,31 +11,55 @@ import numpy as np
 def detect_keypoints_and_descriptors(
     gray_image: np.ndarray,
     n_features: int = 3000,
-    scale_factor: float = 1.2,
-    n_levels: int = 8,
+    method: str = "sift",
+    scale_factor: float = 1.15,
+    n_levels: int = 10,
     edge_threshold: int = 31,
     patch_size: int = 31,
     fast_threshold: int = 20,
 ) -> Tuple[List[cv2.KeyPoint], Optional[np.ndarray]]:
     """
-    Detect ORB keypoints and compute 256-bit binary descriptors.
+    Detect feature keypoints and compute descriptors.
+
+    Supports:
+        - 'sift': Scale-Invariant Feature Transform (best for scaled/zoomed-in/out and rotated copy-move)
+        - 'orb': Multi-scale Oriented FAST and Rotated BRIEF (fast binary features)
+        - 'hybrid': SIFT with enhanced multi-scale coverage
 
     Args:
         gray_image: 2D uint8 grayscale image
         n_features: maximum number of features to retain
-        scale_factor: pyramid decimation ratio
-        n_levels: number of pyramid levels
-        edge_threshold: threshold size from image borders
+        method: 'sift', 'orb', or 'hybrid'
+        scale_factor: pyramid decimation ratio for ORB
+        n_levels: number of pyramid levels for ORB
+        edge_threshold: edge threshold for ORB
         patch_size: size of the patch used by oriented BRIEF
-        fast_threshold: FAST detector threshold
+        fast_threshold: FAST detector threshold for ORB
 
     Returns:
         keypoints: list of cv2.KeyPoint objects
-        descriptors: (N, 32) uint8 numpy array, or None if no features found
+        descriptors: numpy array (float32 for SIFT, uint8 for ORB), or None
     """
     if gray_image.ndim != 2:
-        raise ValueError("ORB detector expects a 2D grayscale image.")
+        raise ValueError("Feature detector expects a 2D grayscale image.")
 
+    method_clean = str(method).lower().strip()
+
+    if method_clean in ("sift", "hybrid"):
+        # SIFT provides rigorous continuous scale-space invariance
+        sift = cv2.SIFT_create(
+            nfeatures=n_features,
+            nOctaveLayers=3,
+            contrastThreshold=0.03,
+            edgeThreshold=10,
+            sigma=1.6,
+        )
+        keypoints, descriptors = sift.detectAndCompute(gray_image, mask=None)
+        if keypoints is None:
+            keypoints = []
+        return keypoints, descriptors
+
+    # Default / fallback to ORB with fine multi-scale pyramid
     orb = cv2.ORB_create(
         nfeatures=n_features,
         scaleFactor=scale_factor,
@@ -48,7 +73,6 @@ def detect_keypoints_and_descriptors(
     )
 
     keypoints, descriptors = orb.detectAndCompute(gray_image, mask=None)
-
     if keypoints is None:
         keypoints = []
 
@@ -72,21 +96,11 @@ def draw_keypoints(
 ) -> np.ndarray:
     """
     Render keypoints onto the image.
-
-    Args:
-        image_rgb: RGB image
-        keypoints: list of KeyPoints
-        color: RGB tuple for drawing
-        rich: If True, draws circle with size and orientation
-
-    Returns:
-        Annotated RGB image
     """
     flags = cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS if rich else cv2.DRAW_MATCHES_FLAGS_DEFAULT
-    # cv2.drawKeypoints expects BGR or gray, so convert RGB -> BGR -> draw -> BGR -> RGB
     bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
-    # color in BGR format
     bgr_color = (int(color[2]), int(color[1]), int(color[0]))
     annotated_bgr = cv2.drawKeypoints(bgr, keypoints, None, color=bgr_color, flags=flags)
     return cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB)
+
 

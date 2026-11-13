@@ -27,9 +27,11 @@ An end-to-end computer vision and digital forensics application developed for a 
 
 ## 🌟 Core Features
 
-- **Intra-Image ORB Keypoint Matching:** Multi-scale corner detection with orientation compensation and 256-bit steered binary descriptors (BRIEF).
-- **False-Match Suppression:** Eliminates trivial adjacent-texture matches using Euclidean spatial distance thresholding ($d_{\text{spatial}} \ge 35\text{ px}$), Lowe's ratio test ($r \le 0.75$), and local patch **Normalized Cross-Correlation (NCC $\ge 0.45$)** verification.
-- **RANSAC Geometric Verification:** Fits partial affine (translation, rotation, scale) and homography models with physical geometric validity checks to identify genuine cloned patches while rejecting random feature pairings.
+- **Dual-Engine Feature Extraction (SIFT & Multi-Scale ORB):**
+  - **SIFT Engine (Default & Recommended):** Strictly scale- and rotation-invariant feature extraction designed for scaled/zoomed-in/out ($0.2\times - 5.0\times$) and rotated copy-move objects.
+  - **Multi-Scale ORB Engine:** Fast binary feature detection using 12 pyramid octaves ($\text{scaleFactor} = 1.15$).
+- **Scale-Aware False-Match Suppression:** Eliminates trivial adjacent-texture matches using Euclidean spatial distance thresholding ($d_{\text{spatial}} \ge 30\text{ px}$), Lowe's ratio test ($r \le 0.78$), and **Scale-Aware Normalized Cross-Correlation (NCC)** which resamples patches based on keypoint octave scale ratios.
+- **Bidirectional RANSAC Geometric Verification:** Evaluates canonical directional alignments to ensure source $\to$ target transformation vectors are physically consistent, supporting full zoom ranges ($s \in [0.20, 5.0]$) and reporting the exact estimated zoom ratio (e.g. `Zoom Out ~30% (0.70x)` or `Zoom In ~35% (1.35x)`).
 - **Calibrated Decision & Confidence Engine:** Clear, unambiguous decision confidence:
   - If Authentic: outputs **"LIKELY AUTHENTIC"** with high confidence (**90% – 100%**).
   - If Forged: outputs **"POSSIBLY FORGED"** with high confidence (**85% – 99%**).
@@ -38,10 +40,9 @@ An end-to-end computer vision and digital forensics application developed for a 
 - **Error Level Analysis (ELA):** Independent compression residual analysis highlighting JPEG quality factor discrepancies and local error variance.
 - **Ground-Truth Evaluation:** Quantitative comparison against CoMoFoD dataset ground-truth masks using IoU, Precision, Recall, F1-Score, and a color-coded confusion overlay (Green = TP, Red = FP, Blue = FN).
 - **Interactive Streamlit Web Dashboard (`app.py`):**
-  - Single Image Analysis mode with pre-loaded CoMoFoD samples or custom uploads.
+  - Single Image Analysis mode with feature engine selection (SIFT vs ORB).
+  - Estimated zoom/scale ratio display in metric cards and forensic tabs.
   - Real-time parameter tuning (feature counts, thresholds, radii).
-  - Batch dataset benchmarking with progress tracking, bar charts, and CSV export.
-  - One-click export of official Forensic Reports (`.txt`) and Academic Summary Figures (`.png`).
 
 ---
 

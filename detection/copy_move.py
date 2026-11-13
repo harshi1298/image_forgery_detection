@@ -12,16 +12,18 @@ from .matcher import match_keypoints_intra_image, apply_ransac_filtering
 
 def detect_copy_move(
     gray_image: np.ndarray,
+    feature_method: str = "sift",
     n_features: int = 3500,
-    ratio_threshold: float = 0.75,
-    min_spatial_distance: float = 35.0,
-    max_hamming_distance: int = 50,
+    ratio_threshold: float = 0.78,
+    min_spatial_distance: float = 30.0,
+    max_hamming_distance: int = 58,
     reproj_threshold: float = 6.0,
     min_inliers_for_forgery: int = 10,
-    min_patch_ncc: float = 0.45,
+    min_patch_ncc: float = 0.35,
 ) -> Dict[str, Any]:
     """
     Run full Copy-Move detection pipeline on preprocessed grayscale image.
+    Supports both SIFT (scale & rotation invariant) and multi-scale ORB.
 
     Returns dict containing:
         is_detected: bool (True if suspected copy-move)
@@ -34,10 +36,13 @@ def detect_copy_move(
         matched_points_src: list of (x, y) coords
         matched_points_dst: list of (x, y) coords
         mean_ncc: float average NCC score of inliers
+        estimated_scale: estimated zoom/scale ratio of manipulation
+        scale_description: human-readable zoom/scale interpretation
     """
     keypoints, descriptors = detect_keypoints_and_descriptors(
         gray_image,
         n_features=n_features,
+        method=feature_method,
     )
 
     if not keypoints or descriptors is None or len(keypoints) < 4:
@@ -52,6 +57,8 @@ def detect_copy_move(
             "matched_points_src": [],
             "matched_points_dst": [],
             "mean_ncc": 0.0,
+            "estimated_scale": 1.0,
+            "scale_description": "N/A",
         }
 
     raw_matches = match_keypoints_intra_image(
@@ -64,7 +71,7 @@ def detect_copy_move(
         min_patch_ncc=min_patch_ncc,
     )
 
-    inlier_matches, transform_matrix, _ = apply_ransac_filtering(
+    inlier_matches, transform_matrix, _, estimated_scale = apply_ransac_filtering(
         keypoints=keypoints,
         matches=raw_matches,
         reproj_threshold=reproj_threshold,
@@ -86,13 +93,29 @@ def detect_copy_move(
     is_detected = inlier_count >= min_inliers_for_forgery
     mean_ncc = float(np.mean(ncc_scores)) if ncc_scores else 0.0
 
+    # Describe zoom / scaling
+    if is_detected and transform_matrix is not None:
+        s = estimated_scale
+        if 0.92 <= s <= 1.08:
+            scale_desc = f"1:1 Scale (Unscaled, s={s:.2f})"
+        elif s < 0.92:
+            pct_out = int(round((1.0 - s) * 100))
+            reciprocal = 1.0 / max(s, 1e-4)
+            pct_in = int(round((reciprocal - 1.0) * 100))
+            scale_desc = f"{s:.2f}x (Zoom Out ~{pct_out}% / In ~{pct_in}%)"
+        else:
+            pct_in = int(round((s - 1.0) * 100))
+            reciprocal = 1.0 / s
+            pct_out = int(round((1.0 - reciprocal) * 100))
+            scale_desc = f"{s:.2f}x (Zoom In ~{pct_in}% / Out ~{pct_out}%)"
+    else:
+        scale_desc = "1:1 / None detected"
+
     # Calibrate confidence (forgery probability)
     if is_detected:
-        # High confidence for verified inliers
         inlier_factor = min(1.0, inlier_count / 30.0)
         confidence = float(np.clip(0.72 + 0.20 * inlier_factor + 0.08 * mean_ncc, 0.72, 0.99))
     else:
-        # Authentic images have low forgery probability
         confidence = float(np.clip(inlier_count / (min_inliers_for_forgery * 2.5), 0.0, 0.35))
 
     return {
@@ -106,6 +129,8 @@ def detect_copy_move(
         "matched_points_src": src_pts,
         "matched_points_dst": dst_pts,
         "mean_ncc": mean_ncc,
+        "estimated_scale": estimated_scale,
+        "scale_description": scale_desc,
     }
 
 

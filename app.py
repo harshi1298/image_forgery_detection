@@ -85,11 +85,19 @@ st.sidebar.caption("ORB + ELA + Localization Pipeline")
 st.sidebar.markdown("---")
 st.sidebar.subheader("⚙️ Detection Parameters")
 
-with st.sidebar.expander("ORB & Matcher Settings", expanded=True):
-    n_features = st.slider("Max ORB Features", 1000, 5000, 3500, step=250)
-    ratio_thresh = st.slider("Lowe's Ratio Threshold", 0.60, 0.90, 0.75, step=0.02)
-    min_spatial_dist = st.slider("Min Spatial Distance (px)", 15, 80, 35, step=5)
-    max_hamming = st.slider("Max Hamming Distance", 30, 80, 50, step=2)
+feature_engine = st.sidebar.selectbox(
+    "Feature Extractor Engine",
+    options=["SIFT (Scale & Zoom Robust - Recommended)", "ORB (Fast Multi-scale)"],
+    index=0,
+    help="SIFT handles scaled/zoomed-in/out and rotated copy-move objects. ORB is fast for unscaled manipulation.",
+)
+feature_method = "sift" if "SIFT" in feature_engine else "orb"
+
+with st.sidebar.expander("Feature & Matcher Settings", expanded=True):
+    n_features = st.slider("Max Keypoints", 1000, 5000, 3500, step=250)
+    ratio_thresh = st.slider("Lowe's Ratio Threshold", 0.60, 0.90, 0.78, step=0.02)
+    min_spatial_dist = st.slider("Min Spatial Distance (px)", 15, 80, 30, step=5)
+    max_hamming = st.slider("Max Hamming Distance (ORB)", 30, 80, 58, step=2)
     ransac_thresh = st.slider("RANSAC Reproj Threshold", 2.0, 15.0, 6.0, step=0.5)
     min_inliers = st.slider("Min Inliers for Detection", 3, 25, 10, step=1)
 
@@ -159,6 +167,7 @@ else:
             # 2. Copy-Move Detection
             cm_result = detect_copy_move(
                 gray_image=filtered_gray,
+                feature_method=feature_method,
                 n_features=n_features,
                 ratio_threshold=ratio_thresh,
                 min_spatial_distance=min_spatial_dist,
@@ -227,6 +236,7 @@ else:
                     <strong>Decision Confidence:</strong> {decision['confidence_pct']}% &nbsp;|&nbsp; 
                     <strong>Forgery Probability:</strong> {decision.get('forgery_prob', 0.0)*100:.1f}% &nbsp;|&nbsp; 
                     <strong>Authenticity:</strong> {decision.get('authenticity_prob', 0.0)*100:.1f}% &nbsp;|&nbsp; 
+                    <strong>Estimated Zoom / Scale:</strong> {cm_result.get('scale_description', '1:1')} &nbsp;|&nbsp; 
                     <strong>Risk Level:</strong> {decision['risk_level']} &nbsp;|&nbsp; 
                     <strong>Computation Time:</strong> {elapsed:.2f}s
                 </p>
@@ -237,26 +247,28 @@ else:
 
         # Metric Columns
         if metrics:
-            c1, c2, c3, c4, c5, c6 = st.columns(6)
+            c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
             c1.metric("RANSAC Inliers", f"{len(cm_result['inlier_matches'])}", f"of {len(cm_result['all_matches'])} candidates")
             c2.metric("IoU (Localization)", f"{metrics['iou']:.3f}", "Intersection/Union")
             c3.metric("F1-Score", f"{metrics['f1']:.3f}", "Harmonic Mean")
             c4.metric("Precision", f"{metrics['precision']:.3f}", "TP / (TP+FP)")
             c5.metric("Recall", f"{metrics['recall']:.3f}", "TP / (TP+FN)")
-            c6.metric("ELA Score", f"{decision['ela_anomaly_score']:.2f}", f"Std: {ela_result['std_error']:.1f}")
+            c6.metric("Scale / Zoom", cm_result.get('scale_description', '1:1'))
+            c7.metric("ELA Score", f"{decision['ela_anomaly_score']:.2f}", f"Std: {ela_result['std_error']:.1f}")
         else:
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("ORB Keypoints", f"{len(cm_result['keypoints']):,}")
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("Detected Keypoints", f"{len(cm_result['keypoints']):,}")
             c2.metric("Candidate Matches", f"{len(cm_result['all_matches']):,}")
-            c3.metric("RANSAC Inlier Pairs", f"{len(cm_result['inlier_matches']):,}")
-            c4.metric("ELA Anomaly Score", f"{decision['ela_anomaly_score']:.2f}")
+            c3.metric("RANSAC Inliers", f"{len(cm_result['inlier_matches']):,}")
+            c4.metric("Estimated Scale", cm_result.get('scale_description', '1:1'))
+            c5.metric("ELA Anomaly Score", f"{decision['ela_anomaly_score']:.2f}")
 
         # ----------------- TABS FOR VISUALIZATION -----------------
         t_main, t_compare, t_orb, t_ela, t_report = st.tabs(
             [
                 "🖼️ Primary Visual Results",
                 "🎯 Ground Truth & IoU Evaluation",
-                "🔍 ORB Matcher Deep Dive",
+                "🔍 Feature Matcher Deep Dive",
                 "⚡ ELA Compression Analysis",
                 "📝 Forensic Report & Export",
             ]
@@ -313,14 +325,17 @@ else:
                 st.image(pred_mask, caption=f"Predicted Suspicious Mask ({int((pred_mask > 127).sum()):,} px)", width=450)
 
         with t_orb:
-            st.subheader("ORB Keypoint Extraction and Inlier Analysis")
+            st.subheader("Feature Keypoint Extraction and Inlier Analysis")
             kp_img = draw_keypoints(resized_rgb, cm_result["keypoints"], color=(0, 255, 120), rich=False)
 
             k_col1, k_col2 = st.columns(2)
             with k_col1:
-                st.image(kp_img, caption=f"All Extracted ORB Keypoints ({len(cm_result['keypoints'])})", use_container_width=True)
+                st.image(kp_img, caption=f"All Extracted Keypoints ({len(cm_result['keypoints'])})", use_container_width=True)
             with k_col2:
-                st.image(matches_vis, caption=f"RANSAC Inlier Matches ({len(cm_result['inlier_matches'])})", use_container_width=True)
+                st.image(matches_vis, caption=f"RANSAC Inlier Matches ({len(cm_result['inlier_matches'])}) - {cm_result.get('scale_description', '1:1')}", use_container_width=True)
+
+            if cm_result.get("transform_matrix") is not None:
+                st.info(f"📐 **Estimated Transformation:** {cm_result.get('scale_description', 'N/A')} | Scale Ratio: {cm_result.get('estimated_scale', 1.0):.3f}")
 
             if cm_result["inlier_matches"]:
                 st.markdown("#### Sample Matched Inlier Keypoint Coordinates")
@@ -337,7 +352,7 @@ else:
                         "Destination (x, y)": f"({p2[0]:.1f}, {p2[1]:.1f})",
                         "Displacement (dx, dy)": f"({dx:+.1f}, {dy:+.1f})",
                         "Patch NCC": ncc_val,
-                        "Hamming Dist": int(m[2]),
+                        "Feature Distance": f"{m[2]:.1f}",
                         "Spatial Dist": f"{m[3]:.1f} px",
                     })
                 st.dataframe(pd.DataFrame(inlier_rows), use_container_width=True)

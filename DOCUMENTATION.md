@@ -8,7 +8,7 @@
 
 This document provides the complete, authoritative technical specification, mathematical formulation, module-by-module architectural design, and evaluation methodology for the **Image Forgery Detection and Localization** system. 
 
-Designed for a **2-member, 1-week computer vision mini-project**, the system achieves dual forensic objectives:
+
 1. **Task A — Detection:** Determining binary authenticity ("Possibly Forged" vs. "Likely Authentic").
 2. **Task B — Localization:** Pinpointing the suspicious manipulated region at the pixel level, generating a predicted binary mask, and validating it against the **CoMoFoD** dataset ground-truth using **Intersection over Union (IoU)**, **Precision**, **Recall**, and **F1-Score**.
 
@@ -206,24 +206,32 @@ Standard matching compares descriptors from two different images. In **Copy-Move
    Among the remaining non-local neighbors, let $m_1$ be the closest non-local candidate with Hamming distance $d_1$, and $m_2$ be the second closest candidate with distance $d_2$. The match is accepted if:
    $$\frac{d_1}{d_2} < \tau_{\text{ratio}} \quad (\tau_{\text{ratio}} = 0.75)$$
 
-4. **Normalized Cross-Correlation (NCC) Patch Verification:**
-   To eliminate false matches between unrelated repeating textures, we extract a $(2r+1) \times (2r+1)$ pixel patch ($17 \times 17\text{ px}$) around each keypoint coordinate and compute Pearson's Normalized Cross-Correlation:
+4. **Scale-Aware Normalized Cross-Correlation (NCC) Patch Verification:**
+   To eliminate false matches between unrelated repeating textures while supporting scaled/zoomed-in/out cloned regions, we compute scale-adjusted Pearson Normalized Cross-Correlation:
    $$\text{NCC}(P_1, P_2) = \frac{\sum_{x, y} (P_1(x, y) - \mu_1)(P_2(x, y) - \mu_2)}{\sqrt{\sum_{x, y} (P_1(x, y) - \mu_1)^2 \sum_{x, y} (P_2(x, y) - \mu_2)^2}}$$
-   Only pairs satisfying $\text{NCC} \ge 0.45$ (typically $\ge 0.70$ for cloned regions) are retained for geometric verification.
+   When keypoints exhibit different scale octave dimensions ($s = \text{size}_2 / \text{size}_1 \neq 1.0$), patch $P_2$ is sampled with radius $r_2 = \text{round}(r_1 \cdot s)$ and bilinearly interpolated to match $P_1$ before computing the correlation. Candidates with confident descriptor ratios ($\le 0.70$) or verified scale-aware $\text{NCC} \ge 0.35$ are passed to geometric RANSAC.
 
-5. **Symmetric Deduplication:**
-   To prevent double-counting of undirected pairs $(i, j)$ and $(j, i)$, canonical ordering $i < j$ is enforced.
+5. **Bidirectional Canonical Alignment:**
+   In intra-image matching, undirected pairings $(i, j)$ have arbitrary index order. When an object is scaled by $s$, pairs directed $A \to B$ have scale $s$ and translation $+\vec{t}$, while reverse pairs $B \to A$ have scale $1/s$ and $-\vec{t}$. We evaluate canonical spatial alignments (sorting by $x$ or $y$ coordinates) so all candidate vectors point in a coherent direction, preventing RANSAC inliers from canceling each other out.
 
 ---
 
-### 4.4 RANSAC Geometric Verification & Clustering
+### 4.4 SIFT & Multi-Scale Feature Extractors for Scale Invariance
+
+While standard ORB uses discrete binary BRIEF tests, **SIFT (Scale-Invariant Feature Transform)** computes gradient histograms across continuous Difference-of-Gaussians (DoG) scale-space. This makes SIFT invariant to continuous zoom-in and zoom-out operations:
+- **SIFT Engine (Recommended for Zoom / Scaling):** Detects scale-space extrema in octaves $\sigma_k = 2^{k/S}\sigma_0$, ensuring robust matching even when copied objects are resized to $0.3\times - 3.0\times$ original dimensions.
+- **Multi-Scale ORB Engine:** Utilizes a fine pyramid decimation factor ($\text{scaleFactor} = 1.15$ across $12$ pyramid levels) to improve scale coverage for binary features.
+
+---
+
+### 4.5 RANSAC Geometric Verification & Clustering
 
 Even after ratio and spatial filtering, random texture similarities can generate false positives. Genuine copy-move forgery introduces a consistent geometric transformation between the cloned source and target regions.
 
 #### A. Affine Transformation Model
 Assuming rigid body motion with rotation, scaling, and translation, the transformation between source coordinates $(x, y)$ and destination coordinates $(x', y')$ is modeled by an Affine Partial 2D matrix (4 Degrees of Freedom):
 $$\begin{bmatrix} x' \\ y' \end{bmatrix} = \begin{bmatrix} s\cos\theta & -s\sin\theta \\ s\sin\theta & s\cos\theta \end{bmatrix} \begin{bmatrix} x \\ y \end{bmatrix} + \begin{bmatrix} t_x \\ t_y \end{bmatrix}$$
-where $s$ is the scale factor, $\theta$ is the rotation angle, and $(t_x, t_y)$ is the translation vector.
+where $s \in [0.20, 5.0]$ is the scale/zoom factor, $\theta$ is the rotation angle, and $(t_x, t_y)$ is the translation vector.
 
 #### B. RANSAC Iteration
 RANSAC iteratively tests random minimal subsets (2 point pairs for partial affine, 4 for homography):
